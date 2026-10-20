@@ -1,0 +1,259 @@
+@page
+@model IndexModel
+
+@if (!string.IsNullOrWhiteSpace(Model.Message))
+{
+    <p class="notice" role="status">@Model.Message</p>
+}
+
+<section>
+    <h2>1. Prepare seu projeto</h2>
+    <p>Importe somente os registros da revisão. O nome de cada arquivo será registrado como fonte.</p>
+
+    <form method="post" enctype="multipart/form-data" asp-page-handler="Import">
+        <input type="hidden" name="revision" value="@Model.Project.Revision" />
+        <label>
+            Arquivos RIS
+            <input type="file" name="risFiles" accept=".ris,.txt" multiple required />
+        </label>
+        <label>
+            Codificação
+            <select name="encodingName">
+                <option value="utf-8">UTF-8</option>
+                <option value="windows-1252">Windows-1252</option>
+            </select>
+        </label>
+        <button type="submit">Importar</button>
+    </form>
+
+    <p class="muted">A importação acrescenta registros. Não importe juntos o RIS consolidado e os arquivos que o originaram.</p>
+    <a class="button secondary" asp-page-handler="Download" asp-route-kind="project">Salvar backup JSON</a>
+
+    <details>
+        <summary>Retomar backup ou começar outro projeto</summary>
+        <p>Salve o backup antes de substituir a sessão. Backups JSON da versão anterior são aceitos.</p>
+
+        <form method="post" enctype="multipart/form-data" asp-page-handler="Restore">
+            <input type="hidden" name="revision" value="@Model.Project.Revision" />
+            <input type="file" name="backup" accept=".json" required />
+            <label><input type="checkbox" name="confirmReplace" value="true" required /> Substituir a sessão pelo backup</label>
+            <button type="submit">Retomar projeto</button>
+        </form>
+
+        <form method="post" asp-page-handler="Reset">
+            <input type="hidden" name="revision" value="@Model.Project.Revision" />
+            <label><input type="checkbox" name="confirmReplace" value="true" required /> Confirmo a criação de uma sessão vazia</label>
+            <button type="submit" class="secondary">Novo projeto</button>
+        </form>
+    </details>
+</section>
+
+<div class="stats">
+    <div><small>Registros importados</small><strong>@Model.Project.Records.Count</strong></div>
+    <div><small>Cópias removidas</small><strong>@Model.State.RemovedToKept.Count</strong></div>
+    <div><small>Registros mantidos</small><strong>@(Model.Project.Records.Count - Model.State.RemovedToKept.Count)</strong></div>
+    <div><small>Pares pendentes</small><strong>@Model.Pending.Count</strong></div>
+</div>
+
+<p class="muted">Pares candidatos não são quantidades de duplicatas. Só remoções confirmadas alteram o total mantido.</p>
+
+<nav aria-label="Consulta de referências">
+    <a class="button @(Model.Tab == "pairs" ? "" : "secondary")" asp-route-tab="pairs">Pares de duplicatas</a>
+    <a class="button @(Model.Tab == "records" ? "" : "secondary")" asp-route-tab="records">Todos os registros</a>
+</nav>
+
+@if (Model.Tab == "records")
+{
+    <section>
+        <h2>Todos os registros importados</h2>
+        <p>“Mantido” significa que o registro permanece no RIS de saída; não indica inclusão na revisão científica.</p>
+
+        <form method="get">
+            <input type="hidden" name="tab" value="records" />
+            <label>Busca por título, autor, DOI ou ID <input asp-for="Query" /></label>
+            <label>
+                Situação
+                <select asp-for="Status">
+                    <option value="all">Todos</option>
+                    <option value="kept">Mantidos</option>
+                    <option value="removed">Removidos</option>
+                </select>
+            </label>
+            <button type="submit">Filtrar</button>
+        </form>
+
+        <p>@Model.FilteredRecords.Count de @Model.Project.Records.Count registros</p>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>Título / autores / DOI</th><th>Ano</th><th>Situação</th><th>Detalhes</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var record in Model.FilteredRecords)
+                    {
+                        var removed = Model.State.RemovedToKept.ContainsKey(record.Id);
+
+                        <tr>
+                            <td>@record.Id</td>
+                            <td><b>@record.Title</b><small>@record.Authors</small><small>DOI: @record.Doi</small></td>
+                            <td>@record.Year</td>
+                            <td>
+                                <span class="badge @(removed ? "removed" : "")">@(removed ? "Removido" : "Mantido")</span>
+                                @if (removed)
+                                {
+                                    <small>Registro final: @Model.State.Representative(record.Id)</small>
+                                }
+                            </td>
+                            <td><a asp-route-tab="records" asp-route-query="@Model.Query" asp-route-status="@Model.Status" asp-route-id="@record.Id">Ver registro</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (Model.Detail is { } detail)
+        {
+            var removal = Model.Project.Events.FirstOrDefault(item => item.Kind == "merge" && item.Remove == detail.Id);
+
+            <article class="card">
+                <h3>@detail.Id · @detail.Title</h3>
+                <p><b>Fonte original:</b> @detail.Source</p>
+                <p><b>Fontes do conjunto:</b> @Model.Sources(detail.Id)</p>
+                @if (removal is not null)
+                {
+                    <p class="notice">Removido: @removal.Reason · @removal.Reviewer · @removal.At.ToString("u")</p>
+                }
+                <h4>Metadados originais</h4>
+                <dl>
+                    @foreach (var field in detail.Fields)
+                    {
+                        <dt>@field.Key</dt>
+                        <dd>@string.Join("; ", field.Value)</dd>
+                    }
+                </dl>
+                <details open><summary>RIS original</summary><pre>@detail.Raw</pre></details>
+            </article>
+        }
+    </section>
+}
+else
+{
+    <div class="workspace">
+        <section>
+            <h2>2. Pares pendentes</h2>
+            <div class="queue">
+                @foreach (var candidate in Model.Pending)
+                {
+                    <a class="pair @(candidate == Model.SelectedPair ? "active" : "")" asp-route-a="@candidate.A" asp-route-b="@candidate.B">
+                        @candidate.A × @candidate.B
+                        <b>@Model.Record(candidate.A).Title</b>
+                        <small>@candidate.Reason</small>
+                    </a>
+                }
+            </div>
+        </section>
+
+        <section>
+            @if (Model.SelectedPair is { } pair)
+            {
+                var firstDoi = TextNormalizer.NormalizeDoi(Model.Record(pair.A).Doi);
+                var secondDoi = TextNormalizer.NormalizeDoi(Model.Record(pair.B).Doi);
+
+                <h2>São a mesma publicação?</h2>
+                <p>@pair.Reason · similaridade do par original: @pair.Score.ToString("P1")</p>
+                <p class="muted">Evidência original: @pair.EvidenceA × @pair.EvidenceB. Representantes atuais: @pair.A × @pair.B.</p>
+
+                @if (firstDoi.Length > 0 && secondDoi.Length > 0 && firstDoi != secondDoi)
+                {
+                    <p class="notice">Os DOIs são diferentes. Confira se são publicações distintas ou erro de metadados.</p>
+                }
+
+                <div class="cards">
+                    @foreach (var id in new[] { pair.A, pair.B })
+                    {
+                        var record = Model.Record(id);
+
+                        <article class="card">
+                            <b>@record.Id</b>
+                            <h3>@record.Title</h3>
+                            <dl>
+                                <dt>Autores</dt><dd>@record.Authors</dd>
+                                <dt>Ano</dt><dd>@record.Year</dd>
+                                <dt>DOI</dt><dd>@record.Doi</dd>
+                                <dt>Periódico / obra</dt><dd>@record.First("JO", "JF", "T2")</dd>
+                                <dt>Tipo</dt><dd>@record.First("TY")</dd>
+                                <dt>Fonte original</dt><dd>@record.Source</dd>
+                                <dt>Fontes consolidadas</dt><dd>@Model.Sources(id)</dd>
+                            </dl>
+                            <details><summary>Resumo</summary><p>@record.First("AB", "N2")</p></details>
+                            <details><summary>RIS completo</summary><pre>@record.Raw</pre></details>
+                        </article>
+                    }
+                </div>
+
+                <form method="post" asp-page-handler="Decide">
+                    <input type="hidden" name="revision" value="@Model.Project.Revision" />
+                    <input type="hidden" name="a" value="@pair.A" />
+                    <input type="hidden" name="b" value="@pair.B" />
+                    <label>Responsável <input name="reviewer" value="@Model.Project.Reviewer" required /></label>
+                    <label class="full">Justificativa <textarea name="reason" required placeholder="Descreva o que você conferiu e por que escolheu esta cópia."></textarea></label>
+                    <button name="choice" value="@pair.A">Manter @pair.A e remover @pair.B</button>
+                    <button name="choice" value="@pair.B">Manter @pair.B e remover @pair.A</button>
+                    <button name="choice" value="distinct" class="secondary">Publicações distintas — manter ambas</button>
+                </form>
+
+                @if (Model.Pending.Count > 1)
+                {
+                    var nextIndex = (Model.Pending.IndexOf(pair) + 1) % Model.Pending.Count;
+                    var next = Model.Pending[nextIndex];
+
+                    <a class="button secondary" asp-route-a="@next.A" asp-route-b="@next.B">Decidir depois</a>
+                }
+            }
+            else
+            {
+                <h2>Nenhum par pendente</h2>
+                <p>Importe seus arquivos para iniciar. Ausência de candidatos não garante ausência de duplicatas; confira também os registros sem DOI e as variações de título.</p>
+            }
+        </section>
+    </div>
+}
+
+<section>
+    <h2>3. Histórico e exportação</h2>
+    <form method="post" asp-page-handler="Undo">
+        <input type="hidden" name="revision" value="@Model.Project.Revision" />
+        <button class="secondary" disabled="@(Model.Project.Events.Count == 0)">Desfazer última decisão</button>
+    </form>
+
+    @if (Model.Pending.Count > 0)
+    {
+        <p class="notice">Ainda há pares pendentes. A exportação parcial mantém todas as referências que você não removeu.</p>
+        <a class="button" asp-page-handler="Download" asp-route-kind="ris" asp-route-partial="true">Exportar RIS parcial</a>
+    }
+    else
+    {
+        <a class="button" asp-page-handler="Download" asp-route-kind="ris">Exportar RIS mantidos</a>
+    }
+
+    <a class="button" asp-page-handler="Download" asp-route-kind="decisions">Decisões CSV</a>
+    <a class="button" asp-page-handler="Download" asp-route-kind="inventory">Inventário CSV</a>
+    <a class="button" asp-page-handler="Download" asp-route-kind="report">Relatório JSON</a>
+    <p class="muted">Os campos da cópia escolhida são preservados, sem fusão automática. Os originais e as fontes permanecem no backup e no inventário.</p>
+
+    <details>
+        <summary>Ver histórico completo (@Model.Project.Audit.Count eventos)</summary>
+        @foreach (var decision in Model.Project.Audit.AsEnumerable().Reverse())
+        {
+            <p><b>@decision.Kind</b> · @decision.At.ToString("u") · @decision.Reviewer<br />
+                @decision.Keep @decision.Remove @decision.A @decision.B — @decision.Reason
+            </p>
+        }
+    </details>
+</section>
+
+<details>
+    <summary>Protocolo implementado e limites</summary>
+    <p>DOI não vazio normalizado igual; título normalizado igual; ou similaridade Dice de bigramas ≥ 0,90 em títulos com pelo menos 20 caracteres normalizados. Todas as remoções exigem confirmação humana. Autores e ano são exibidos para conferência, mas não restringem a geração de candidatos.</p>
+    <p>O limiar é heurístico. Títulos traduzidos ou muito diferentes podem não ser detectados. As decisões não têm assinatura digital. Guarde os RIS originais e backups; o software não certifica conformidade editorial.</p>
+</details>
